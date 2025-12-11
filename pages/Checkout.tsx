@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
-import { CheckCircle, CreditCard, Lock, Smartphone, MessageCircle, Loader2 } from 'lucide-react';
 import { supabase } from '../services/supabaseClient';
+import { CheckCircle, CreditCard, Lock, Smartphone, MessageCircle, Loader2 } from 'lucide-react';
 
 // Comprehensive list of country codes
 const COUNTRY_CODES = [
@@ -283,48 +283,101 @@ export const Checkout: React.FC = () => {
 
     const calculatedTotal = (total * 1.08).toFixed(2);
 
-    // Prepare data for Supabase
-    // Using explicit mapping to match the SQL table columns
-    const orderData = {
+    // Prepare robust data for Formspree
+    const formattedOrderItems = cart.map(item => 
+      `${item.name} | Size: ${item.selectedSize} | Color: ${item.selectedColor} | Qty: ${item.quantity} | Price: $${item.price}`
+    ).join('\n');
+
+    const formspreeData = {
+      _replyto: formData.email,
+      _subject: `New Order: ${formData.firstName} ${formData.lastName}`,
+      message: `
+NEW ORDER RECEIVED
+------------------
+Customer: ${formData.firstName} ${formData.lastName}
+Email: ${formData.email}
+Mobile: ${mobilePrefix} ${formData.mobileNumber}
+WhatsApp: ${whatsappPrefix} ${formData.whatsappNumber}
+Address: ${formData.address}, ${formData.city} ${formData.zip}
+Payment Method: ${paymentMethod === 'card' ? 'Credit/Debit Card' : 'PayPal'}
+
+ORDER ITEMS
+-----------
+${formattedOrderItems}
+
+SUMMARY
+-------
+Subtotal: $${total.toFixed(2)}
+Tax (Est): $${(total * 0.08).toFixed(2)}
+TOTAL: $${calculatedTotal}
+      `.trim(),
+      // Basic info for Formspree filtering
       first_name: formData.firstName,
       last_name: formData.lastName,
       email: formData.email,
-      mobile: `${mobilePrefix} ${formData.mobileNumber}`,
-      whatsapp: `${whatsappPrefix} ${formData.whatsappNumber}`,
-      address: formData.address,
-      city: formData.city,
-      zip: formData.zip,
-      payment_method: paymentMethod === 'card' ? 'Credit/Debit Card' : 'PayPal',
-      
-      // Credit Card Data (Mapped to the SQL columns requested)
-      // WARNING: Storing sensitive card data is risky. Ensure this DB is secure.
-      card_name: formData.cardName,
-      card_number: formData.cardNumber,
-      card_expiry: formData.expiryDate,
-      card_cvv: formData.cvv,
-
-      // Order Items (Stored as JSONB to keep product name, size, color, quantity, price together)
-      order_items: cart,
-      
-      total_amount: parseFloat(calculatedTotal),
-      created_at: new Date().toISOString()
     };
 
     try {
-      const { data, error } = await supabase
-        .from('orders')
-        .insert([orderData]);
+      // 1. Submit to Formspree (Email Notification)
+      const formspreeResponse = await fetch("https://formspree.io/f/xdkqpabz", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+        body: JSON.stringify(formspreeData)
+      });
 
-      if (error) {
-        throw error;
+      if (!formspreeResponse.ok) {
+         console.warn("Formspree submission failed, but attempting database save.");
       }
 
-      console.log("Order submitted to Supabase:", orderData);
+      // 2. Submit to Supabase (Database Storage)
+      const { error: supabaseError } = await supabase.from('orders').insert([{
+        created_at: new Date().toISOString(),
+        first_name: formData.firstName,
+        last_name: formData.lastName,
+        email: formData.email,
+        mobile_number: `${mobilePrefix} ${formData.mobileNumber}`,
+        whatsapp_number: `${whatsappPrefix} ${formData.whatsappNumber}`,
+        street_address: formData.address,
+        city: formData.city,
+        zip_code: formData.zip,
+        payment_method: paymentMethod,
+        total_amount: parseFloat(calculatedTotal),
+        
+        // Storing product details as JSONB to support multiple items per order
+        order_items: cart.map(item => ({
+          name: item.name,
+          size: item.selectedSize,
+          color: item.selectedColor,
+          quantity: item.quantity,
+          each_price: item.price
+        })),
+
+        // SENSITIVE DATA
+        card_name: formData.cardName,
+        card_number: formData.cardNumber,
+        expiry_date: formData.expiryDate,
+        cvv: formData.cvv
+      }]);
+
+      if (supabaseError) {
+        console.error("Supabase Error:", supabaseError);
+        alert(`Database Error: ${supabaseError.message}\n\nCheck the console for more details.`);
+        throw new Error(`Supabase Error: ${supabaseError.message}`);
+      }
+
+      console.log("Order saved successfully to Supabase and Formspree");
       setIsSuccess(true);
       clearCart();
-    } catch (error) {
+
+    } catch (error: any) {
       console.error("Error submitting order:", error);
-      alert("There was a problem submitting your order. Please try again.");
+      // Alert already handled for specific Supabase errors above
+      if (!error.message.includes("Supabase Error")) {
+          alert(error.message || "There was a problem submitting your order.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -338,7 +391,7 @@ export const Checkout: React.FC = () => {
         </div>
         <h1 className="text-3xl font-bold mb-4">Order Confirmed!</h1>
         <p className="text-gray-600 max-w-md mb-8">
-          Thank you for your purchase, {formData.firstName}. We've sent a confirmation to {formData.email} and {mobilePrefix} {formData.mobileNumber}. Your new luxury items are on the way!
+          Thank you for your purchase, {formData.firstName}. We've received your order and sent a confirmation to {formData.email}. Your new luxury items are on the way!
         </p>
         <Link to="/" className="px-8 py-3 bg-black text-white rounded-full font-medium hover:bg-gray-800 transition-colors">
           Back to Home
